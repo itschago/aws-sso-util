@@ -93,8 +93,9 @@ There are three options:
 * `overwrite`: for each profile, provided default entries will overwrite existing entries
 * `discard`: for each profile, all existing entries will be discarded
 
-By default, a `credential_process` entry is created in profiles, see [the docs for `aws-sso-util credential-process`](credential-process.md) for details.
+By default, a `credential_process` entry is created in legacy profiles, see [the docs for `aws-sso-util credential-process`](credential-process.md) for details.
 To disable this, set `--no-credential-process` or the environment variable `AWS_CONFIGURE_SSO_DISABLE_CREDENTIAL_PROCESS=true`.
+When `configure populate` is used with `--sso-session`, `credential_process` is disabled by default because modern shared SSO sessions are supported directly by current AWS CLI and SDK credential providers. It can still be explicitly enabled with `--credential-process`.
 
 # `aws-sso-util configure profile`
 
@@ -160,6 +161,55 @@ You specify one or more regions, and a profile is created for every account, rol
 You can provide regions through the `--region`/`-r` flag (multiple regions like `-r REGION1 -r REGION2`), or by setting the `AWS_CONFIGURE_DEFAULT_REGION` environment variable (this is ignored if any regions are specified on the command line).
 
 You can view the profiles without writing them using the `--dry-run` flag.
+
+## Shared SSO sessions
+
+`configure populate` supports the AWS CLI shared SSO session format with the `--sso-session NAME` option.
+When this option is provided, one shared `[sso-session NAME]` section is written and each generated profile references it with `sso_session`.
+
+For example:
+
+```bash
+aws-sso-util configure populate \
+  --sso-session company \
+  --region us-east-2 \
+  --components account_name \
+  --account-name-case lower
+```
+
+This produces configuration in the following form:
+
+```ini
+[sso-session company]
+sso_start_url = https://example.awsapps.com/start
+sso_region = us-east-2
+sso_registration_scopes = sso:account:access
+
+[profile example-dev]
+sso_account_name = example-dev
+sso_account_id = 123456789012
+sso_role_name = AdministratorAccess
+region = us-east-2
+sso_auto_populated = true
+sso_session = company
+```
+
+The shared session can then be authenticated or refreshed with the AWS CLI:
+
+```bash
+aws sso login --sso-session company
+```
+
+All profiles that reference that session use the same Identity Center login.
+
+When `--sso-session` is used:
+
+* `sso_start_url` and `sso_region` are stored in the shared `[sso-session NAME]` section instead of each profile.
+* `sso_registration_scopes = sso:account:access` is added to the shared session.
+* `credential_process` is not added by default. Use `--credential-process` to force it on.
+* Existing generated profiles are cleaned of legacy `sso_start_url` and `sso_region` values as they are migrated to the shared-session format.
+
+If `--sso-session` is omitted, `configure populate` retains the legacy per-profile format for backward compatibility. If a profile is changed back to legacy mode, a stale `sso_session` field is removed and the legacy `sso_start_url`, `sso_region`, and default `credential_process` behavior are restored.
 
 ## Profile names
 The generated profile names are highly configurable.

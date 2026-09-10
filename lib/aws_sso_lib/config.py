@@ -55,6 +55,18 @@ class SSOInstance(namedtuple("SSOInstance", ["start_url", "region", "start_url_s
     def to_strs(cls, instances, region=None):
         return ", ".join(i.to_str(region=region) for i in instances)
 
+def _get_instance_from_sso_session(session_name, session_config: dict, missing_ok=False) -> Optional[SSOInstance]:
+    start_url = session_config.get("sso_start_url")
+    region = session_config.get("sso_region")
+    if not (start_url and region):
+        if not missing_ok:
+            LOGGER.debug(f"Did not find config in SSO session {session_name}")
+        return None
+    source = f"sso-session {session_name}"
+    instance = SSOInstance(start_url, region, source, source)
+    LOGGER.debug(f"SSO session {session_name} has instance {instance.to_str(region=True)}")
+    return instance
+
 def _get_instance_from_profile(profile_name, scoped_config: dict, missing_ok=False) -> Optional[SSOInstance]:
     start_url = scoped_config.get("sso_start_url")
     region = scoped_config.get("sso_region")
@@ -65,9 +77,29 @@ def _get_instance_from_profile(profile_name, scoped_config: dict, missing_ok=Fal
     instance = SSOInstance(start_url, region, "profile", "profile")
     LOGGER.debug(f"Profile {profile_name} has instance {instance.to_str(region=True)}")
     return instance
+def _get_instance_from_profile_config(profile_name, scoped_config: dict, full_config: dict, missing_ok=False) -> Optional[SSOInstance]:
+    instance = _get_instance_from_profile(profile_name, scoped_config, missing_ok=True)
+    if instance:
+        return instance
+    sso_session_name = scoped_config.get("sso_session")
+    if sso_session_name:
+        session_config = full_config.get("sso_sessions", {}).get(sso_session_name, {})
+        return _get_instance_from_sso_session(sso_session_name, session_config, missing_ok=missing_ok)
+    if not missing_ok:
+        LOGGER.debug(f"Did not find Identity Center config in profile {profile_name}")
+    return None
 
 def _get_all_instances_from_config(full_config: dict):
     instances: dict = {}
+    for session_name, session_config in full_config.get("sso_sessions", {}).items():
+        instance = _get_instance_from_sso_session(session_name, session_config, missing_ok=True)
+        if not instance:
+            continue
+        if instance.start_url in instances and instance.region != instances[instance.start_url].region:
+            regions = f"{instance.region}, {instances[instance.start_url].region}"
+            LOGGER.warning(f"Region mismatch in config for {instance.start_url}: {regions}")
+        else:
+            instances[instance.start_url] = instance
     for profile_name, scoped_config in full_config.get("profiles", {}).items():
         instance = _get_instance_from_profile(profile_name, scoped_config, missing_ok=True)
         if not instance:
@@ -97,7 +129,7 @@ def _find_instance_from_profile(
         region_source=None):
     try:
         session = botocore.session.Session(profile=profile_name)
-        instance = _get_instance_from_profile(profile_name, session.get_scoped_config())
+        instance = _get_instance_from_profile_config(profile_name, session.get_scoped_config(), session.full_config)
     except ProfileNotFound:
         return None
     if not instance:
