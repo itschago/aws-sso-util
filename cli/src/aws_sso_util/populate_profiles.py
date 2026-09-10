@@ -186,6 +186,7 @@ def get_safe_account_name(name):
 @click.command("populate")
 @click.option("--sso-start-url", "-u", metavar="URL", help="Your Identity Center start URL")
 @click.option("--sso-region", metavar="REGION", help="The AWS region your Identity Center instance is deployed in")
+@click.option("--sso-session", "sso_session_name", metavar="NAME", help="Write modern shared [sso-session NAME] configuration")
 
 @click.option("--region", "-r", "regions", metavar="REGION", multiple=True, help="AWS region for the profiles, can provide multiple times")
 
@@ -212,6 +213,7 @@ def get_safe_account_name(name):
 def populate_profiles(
         sso_start_url,
         sso_region,
+        sso_session_name,
         regions,
         dry_run,
         config_default,
@@ -369,15 +371,42 @@ def populate_profiles(
 
     LOGGER.debug("Got configs: {}".format(configs))
 
+    sso_session_values = None
+    if sso_session_name:
+        sso_session_values = {
+            "sso_start_url": instance.start_url,
+            "sso_region": instance.region,
+            "sso_registration_scopes": "sso:account:access",
+        }
+
     if not dry_run:
         LOGGER.info("Writing {} profiles to {}".format(len(configs), get_config_filename(session)))
 
         config_writer = ConfigFileWriter()
+
+        if sso_session_values:
+            LOGGER.info("Writing SSO session {} to {}".format(
+                sso_session_name, get_config_filename(session)))
+            session_values = sso_session_values.copy()
+            session_values["__section__"] = "sso-session {}".format(
+                process_profile_name(sso_session_name))
+            config_writer.update_config(
+                session_values,
+                get_config_filename(session),
+                existing_config_action="overwrite",
+            )
         def write_config(profile_name, config_values):
             # discard because we're already loading the existing values
             write_values(session, profile_name, config_values, existing_config_action="discard", config_file_writer=config_writer)
     else:
         LOGGER.info("Dry run for {} profiles".format(len(configs)))
+
+        if sso_session_values:
+            print("[sso-session {}]".format(process_profile_name(sso_session_name)))
+            for key, value in sso_session_values.items():
+                print("{} = {}".format(key, value))
+            print("")
+
         def write_config(profile_name, config_values):
             lines = [
                 "[profile {}]".format(process_profile_name(profile_name))
@@ -401,10 +430,16 @@ def populate_profiles(
             except ProfileNotFound:
                 pass
 
-        config_values.update({
-            "sso_start_url": instance.start_url,
-            "sso_region": instance.region,
-        })
+        if sso_session_name:
+            config_values.pop("sso_start_url", None)
+            config_values.pop("sso_region", None)
+            config_values["sso_session"] = sso_session_name
+        else:
+            config_values.pop("sso_session", None)
+            config_values.update({
+                "sso_start_url": instance.start_url,
+                "sso_region": instance.region,
+            })
         if config.account_name != config.account_id:
             config_values["sso_account_name"] = config.account_name
         config_values.update({
@@ -421,6 +456,8 @@ def populate_profiles(
         if credential_process is not None:
             set_credential_process = credential_process
         elif os.environ.get(DISABLE_CREDENTIAL_PROCESS_VAR, "").lower() in ["1", "true"]:
+            set_credential_process = False
+        elif sso_session_name:
             set_credential_process = False
         else:
             set_credential_process = SET_CREDENTIAL_PROCESS_DEFAULT
